@@ -11,10 +11,6 @@ from tkinter import filedialog
 import zipfile
 import pandas as pd
 import datetime, re
-import pandas_bokeh
-#pd.options.plotting.backend = "plotly"
-
-#pd.set_option('plotting.backend', 'pandas_bokeh')
 
 def readData():
     wnd = tk.Tk()
@@ -36,47 +32,46 @@ def readData():
             vax = pd.read_csv(zip_ref.open(file), encoding='Windows-1252', low_memory=False)
             vax.index.name = 'idx'
 
-    #df = pd.merge(data, symptoms, on='VAERS_ID', how='outer')
-    #df = pd.merge(df, vax, on='VAERS_ID', how='outer')
     return data, symptoms, vax
 
 def deaths(data, symptoms, vax):
     deaths = (data[data['DIED'] == 'Y']).copy() # filter entries to contain only deaths
+    print(f"adverse events: {data.shape[0]} containing {deaths.shape[0]} deaths")
     for col in list(filter(lambda s: re.search("DATE", s), deaths.columns.to_list())):
         # convert data type of date columns 
         deaths.loc[:, col] = pd.to_datetime(deaths.loc[:, col], format="%m/%d/%Y", errors='coerce')
     
-    unknown_deathdate = deaths[deaths.DATEDIED.isnull()]
-    dates_need_fix = False
-    if 0 < unknown_deathdate.shape[0]:
-        dates_need_fix = True    
-        print(f"{unknown_deathdate.shape[0]} deaths with issues in date of death found.")
+    fix_deathdates = deaths[ (deaths.DATEDIED.isnull()) | (deaths.DATEDIED.dt.year != 2021) ]
+    dates_need_fix = True if 0 < fix_deathdates.shape[0] else False
+    if 0 < fix_deathdates.shape[0]:
+        print(f"{fix_deathdates.shape[0]} deaths with issues in date of death found.")
         # filling missing date of death by date form completed at VAERS
-        deaths.at[unknown_deathdate.index, 'DATEDIED'] = unknown_deathdate['TODAYS_DATE']
-        unknown_deathdate = deaths[deaths.DATEDIED.isnull()]
+        deaths.at[fix_deathdates.index, 'DATEDIED'] = fix_deathdates['TODAYS_DATE']
+        fix_deathdates = deaths[deaths.DATEDIED.isnull()]
 
-    if 0 < unknown_deathdate.shape[0]:
+    if 0 < fix_deathdates.shape[0]:
         # filling missing date of death by vaccinatin date
-        deaths.at[unknown_deathdate.index, 'DATEDIED'] = unknown_deathdate['VAX_DATE']
-        unknown_deathdate = deaths[deaths.DATEDIED.isnull()]
+        deaths.at[fix_deathdates.index, 'DATEDIED'] = fix_deathdates['VAX_DATE']
+        fix_deathdates = deaths[deaths.DATEDIED.isnull()]
     
-    if 0 < unknown_deathdate.shape[0]:
+    if 0 < fix_deathdates.shape[0]:
         # filling missing date of death by date report was received at VAERS
-        deaths.at[unknown_deathdate.index, 'DATEDIED'] = unknown_deathdate['RECVDATE']
-        unknown_deathdate = deaths[deaths.DATEDIED.isnull()]
-        
-    if 0 < unknown_deathdate.shape[0]:
-        print(f"{unknown_deathdate.shape[0]} deaths in data which cannot be mapped to a date")
+        deaths.at[fix_deathdates.index, 'DATEDIED'] = fix_deathdates['RECVDATE']
+        fix_deathdates = deaths[deaths.DATEDIED.isnull() | (deaths.DATEDIED.dt.year != 2021)]
+            
+    if 0 < fix_deathdates.shape[0]:
+        wrong_year = deaths.loc[deaths.DATEDIED.dt.year != 2021, 'DATEDIED']
+        deaths.loc[wrong_year.index, 'DATEDIED'] = pd.to_datetime(wrong_year.dt.strftime("2021-%m-%d"),
+                                                                  format="%Y-%m-%d")
+        fix_deathdates = deaths[deaths.DATEDIED.isnull() | (deaths.DATEDIED.dt.year != 2021)]
+
+    if 0 < fix_deathdates.shape[0]:
+        print(f"{fix_deathdates.shape[0]} deaths in data which cannot be mapped to a date")
     else:
         if dates_need_fix:
             print("all deaths contain valid death dates now")
     
-    wrong_year = deaths.loc[deaths.DATEDIED.dt.year != 2021, 'DATEDIED']
-    deaths.loc[wrong_year.index, 'DATEDIED'] = pd.to_datetime(wrong_year.dt.strftime("2021-%m-%d"),
-                                                              format="%Y-%m-%d")
     deaths=pd.merge(deaths, pd.get_dummies(deaths, columns=["SEX"]), how='inner')
-    
-    #deaths = deaths.set_index('DATEDIED', append=True) 
     print(deaths.pivot_table(index=['DATEDIED'], aggfunc={
                                                     'SEX_F': 'sum',
                                                     'SEX_M': 'sum',
@@ -88,7 +83,6 @@ def deaths(data, symptoms, vax):
                                                                  'VAERS_ID':'deaths'}))
                                                         
     merged = pd.merge(deaths, vax[['VAERS_ID', 'VAX_NAME']], on='VAERS_ID', how='inner')
-
     vax_count_tbl = merged.pivot_table(index=['VAERS_ID'], 
                                        aggfunc={'VAX_NAME':'count'}
                                        ).rename(columns={
@@ -111,8 +105,7 @@ def deaths(data, symptoms, vax):
                                     'vaccine_count' : count,
                                     'VAERS_ID' : vaers_id}, 
                                    ignore_index=True)
-    vax_data = vax_data.set_index('VAERS_ID')
-    
+   
     deaths = pd.merge(deaths, vax_data, on='VAERS_ID', how='inner')
     deaths.index.name = 'index'
     deaths.to_csv('vaccination_deaths.csv', sep=';')
